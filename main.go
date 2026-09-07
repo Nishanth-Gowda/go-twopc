@@ -62,19 +62,33 @@ type OrderService struct {
 func (s *OrderService) PlaceOrder(orderID string) error {
 	fmt.Printf("\norder %s: phase 1 (reserve resources)\n", orderID)
 	decision := "COMMIT"
+	type vote struct {
+		participant *Participant
+		yes         bool
+		err         error
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.prepareTimeout)
+	defer cancel()
+	votes := make(chan vote, len(s.participants))
 	for _, participant := range s.participants {
-		ctx, cancel := context.WithTimeout(context.Background(), s.prepareTimeout)
-		yes, err := participant.Prepare(ctx, orderID)
-		cancel()
-		if errors.Is(err, context.DeadlineExceeded) {
-			fmt.Printf("%s: timeout after %s\n", participant.name, s.prepareTimeout)
+		go func(participant *Participant) {
+			yes, err := participant.Prepare(ctx, orderID)
+			votes <- vote{participant: participant, yes: yes, err: err}
+		}(participant)
+	}
+
+	for range s.participants {
+		vote := <-votes
+		if errors.Is(vote.err, context.DeadlineExceeded) {
+			fmt.Printf("%s: timeout after %s\n", vote.participant.name, s.prepareTimeout)
 			decision = "ABORT"
 			continue
 		}
-		if err != nil {
-			return err
+		if vote.err != nil {
+			return vote.err
 		}
-		if !yes {
+		if !vote.yes {
 			decision = "ABORT"
 		}
 	}
